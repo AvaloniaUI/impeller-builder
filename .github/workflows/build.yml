@@ -73,6 +73,15 @@ jobs:
           - { rid: osx-x64, runner: macos-15 }
           - { rid: win-x64, runner: windows-2022 }
           - { rid: win-arm64, runner: windows-2022 }
+          # Apple mobile slices: combined per platform by the apple job.
+          - { rid: ios-arm64, runner: macos-15, slice: true }
+          - { rid: iossimulator-arm64, runner: macos-15, slice: true }
+          - { rid: iossimulator-x64, runner: macos-15, slice: true }
+          - { rid: tvos-arm64, runner: macos-15, slice: true }
+          - { rid: tvossimulator-arm64, runner: macos-15, slice: true }
+          - { rid: tvossimulator-x64, runner: macos-15, slice: true }
+          - { rid: maccatalyst-arm64, runner: macos-15, slice: true }
+          - { rid: maccatalyst-x64, runner: macos-15, slice: true }
     env:
       RID: ${{ matrix.rid }}
       TAG: ${{ needs.resolve.outputs.tag }}
@@ -127,15 +136,59 @@ jobs:
         run: df -h . || true
 
       - uses: actions/upload-artifact@v4
+        if: ${{ !matrix.slice }}
         with:
           name: impeller-${{ matrix.rid }}
           path: release/*.tar.gz
           if-no-files-found: error
           compression-level: 0
 
+      - uses: actions/upload-artifact@v4
+        if: ${{ matrix.slice }}
+        with:
+          name: slice-${{ matrix.rid }}
+          path: release/slices/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  apple:
+    name: ${{ matrix.platform }}
+    needs: [resolve, build]
+    runs-on: macos-15
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ios, tvos, maccatalyst]
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # slice-ios* matches ios-arm64 and iossimulator-*; slice-tvos* and slice-maccatalyst* likewise.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: slice-${{ matrix.platform }}*
+          path: release/slices
+          merge-multiple: true
+
+      - name: Package
+        run: python scripts/package-apple.py "${{ matrix.platform }}" --tag "$TAG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: impeller-${{ matrix.platform }}
+          path: release/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
   release:
     name: Release
-    needs: [resolve, build]
+    needs: [resolve, build, apple]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

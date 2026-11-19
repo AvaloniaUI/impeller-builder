@@ -4,8 +4,9 @@
   make-release.py <dir> --tag T --repository R --ref REF --sha S --version V --kind K --patched true|false
   make-release.py <dir> --tag T --resolved resolved.json          (the JSON of fetch-flutter.py --resolve-only)
 
-Every RID needs a main and a symbols archive, and every desktop RID a tools archive. --partial accepts a subset of
-the RIDs, for local builds that NImpeller reads with --builder-dir; a published release always has all of them.
+Every RID needs a main and a symbols archive, and every desktop RID a tools archive. The Apple mobile platforms (ios,
+tvos, maccatalyst; package-apple.py) need a main and a symbols archive. --partial accepts a subset, for local builds
+that NImpeller reads with --builder-dir; a published release always has all of them.
 The archives must agree on the commit, impeller.h and IMPELLER_VERSION, and be built with LTO unless the RID is
 listed with --allow-no-lto.
 """
@@ -20,6 +21,8 @@ import tarfile
 RIDS = ["linux-x64", "linux-arm64", "osx-x64", "osx-arm64", "win-x64", "win-arm64",
         "android-arm64", "android-arm", "android-x64"]
 DESKTOP = {"linux-x64", "linux-arm64", "osx-x64", "osx-arm64", "win-x64", "win-arm64"}
+# Apple mobile platforms: impeller.framework bundles of several slices (package-apple.py).
+PLATFORMS = ["ios", "tvos", "maccatalyst"]
 
 
 def sha256(path):
@@ -72,7 +75,7 @@ def main():
     assets = {}
     infos = {}
     sums = []
-    for rid in RIDS:
+    for rid in RIDS + PLATFORMS:
         base = args.dir / f"impeller-{args.tag}-{rid}"
         main_archive = pathlib.Path(f"{base}.tar.gz")
         symbols = pathlib.Path(f"{base}-symbols.tar.gz")
@@ -97,7 +100,8 @@ def main():
 
     if not assets:
         sys.exit(f"No impeller-{args.tag}-*.tar.gz in {args.dir}")
-    known = {f"impeller-{args.tag}-{rid}{suffix}.tar.gz" for rid in RIDS for suffix in ("", "-symbols", "-tools")}
+    known = {f"impeller-{args.tag}-{rid}{suffix}.tar.gz" for rid in RIDS + PLATFORMS
+             for suffix in ("", "-symbols", "-tools")}
     stray = sorted(p.name for p in args.dir.glob("*.tar.gz") if p.name not in known)
     if stray:
         sys.exit(f"Unexpected archives in {args.dir}: {', '.join(stray)}")
@@ -147,8 +151,14 @@ def main():
            + ", ".join(r for r, i in infos.items() if i["toolchain"].get("lto") is False))
         + (" (Windows has no LTO in Flutter's toolchain)." if any(i["toolchain"].get("lto") is None
                                                                   for i in infos.values()) else "."),
+    ]
+    if any(rid in assets for rid in PLATFORMS):
+        notes += ["",
+                  "The ios, tvos and maccatalyst archives hold `impeller.framework` per slice (device, simulator, "
+                  "Mac Catalyst): iOS and Mac Catalyst 15.0 or newer, tvOS 16.0 or newer."]
+    notes += [
         "",
-        "| RID | Library | Symbols | Tools |",
+        "| RID or platform | Library | Symbols | Tools |",
         "|---|---|---|---|",
     ]
     for rid, a in assets.items():

@@ -33,11 +33,15 @@ BETA = re.compile(r"^\d+\.\d+\.0-\d+\.\d+\.pre$")
 
 RIDS = ["linux-x64", "linux-arm64", "osx-x64", "osx-arm64", "win-x64", "win-arm64",
         "android-arm64", "android-arm", "android-x64"]
+# The iOS, tvOS and Mac Catalyst builds (macOS hosts); package-apple.py combines them per platform.
+APPLE_SLICES = ["ios-arm64", "iossimulator-arm64", "iossimulator-x64", "tvos-arm64", "tvossimulator-arm64",
+                "tvossimulator-x64", "maccatalyst-arm64", "maccatalyst-x64"]
 
 # gclient custom_vars per target OS. Everything the sdk target does not need is off.
 COMMON_VARS = {"download_esbuild": False, "setup_githooks": False, "download_fuchsia_deps": False,
                "download_android_deps": False}
-OS_VARS = {"linux": {}, "android": {"download_android_deps": True}, "osx": {}, "win": {}}
+OS_VARS = {"linux": {}, "android": {"download_android_deps": True}, "osx": {}, "win": {}, "ios": {},
+           "iossimulator": {}, "tvos": {}, "tvossimulator": {}, "maccatalyst": {}}
 
 
 def run(args, cwd=None, env=None, capture=False):
@@ -227,7 +231,8 @@ def main():
                         help=f"GitHub repository of the {BRANCH_PREFIX}* branches (default {DEFAULT_REPOSITORY})")
     parser.add_argument("--ref", help="avalonia/<tag> branch, upstream release tag, or the SHA of either")
     parser.add_argument("--sha", help="check out this commit of --repository without resolving a ref")
-    parser.add_argument("--rid", choices=RIDS, help="check out and sync the dependencies of a build for this RID")
+    parser.add_argument("--rid", choices=RIDS + APPLE_SLICES,
+                        help="check out and sync the dependencies of a build for this RID")
     parser.add_argument("--resolve-only", action="store_true", help="print the resolved version without a checkout")
     parser.add_argument("--github-output", action="store_true", help="also write the result to $GITHUB_OUTPUT")
     args = parser.parse_args()

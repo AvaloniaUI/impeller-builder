@@ -9,6 +9,10 @@ The archives are written to release/:
   impeller-<tag>-<rid>-symbols.tar.gz  the debug symbols of the library (.so.debug, .dylib.dSYM or .dll.pdb)
   impeller-<tag>-<rid>-tools.tar.gz    impellerc and its shader library (desktop RIDs only)
 
+An Apple mobile slice (ios-arm64, iossimulator-<cpu>, tvos-arm64, tvossimulator-<cpu>, maccatalyst-<cpu>) writes one
+archive, release/slices/impeller-<tag>-<slice>.tar.gz, with the library (install name
+@rpath/impeller.framework/impeller) and its dSYM in symbols/. package-apple.py combines the slices of a platform.
+
 The tag is "local" when --tag is not given. --skip-build repackages an existing out directory. --no-lto is for
 development hosts that cannot link with LTO; make-release.py rejects such archives by default.
 """
@@ -49,11 +53,41 @@ TARGETS = {
     "android-arm64": ("android", "arm64", ["--android", "--android-cpu", "arm64"]),
     "android-arm": ("android", "arm", ["--android", "--android-cpu", "arm"]),
     "android-x64": ("android", "x64", ["--android", "--android-cpu", "x64"]),
+    "ios-arm64": ("ios", "arm64", ["--ios"]),
+    "iossimulator-arm64": ("ios", "arm64", ["--ios", "--simulator", "--simulator-cpu", "arm64"]),
+    "iossimulator-x64": ("ios", "x64", ["--ios", "--simulator", "--simulator-cpu", "x64"]),
+    "tvos-arm64": ("tvos", "arm64", ["--ios", "--ios-platform", "tvos"]),
+    "tvossimulator-arm64": ("tvos", "arm64", ["--ios", "--ios-platform", "tvos", "--simulator", "--simulator-cpu",
+                                              "arm64"]),
+    "tvossimulator-x64": ("tvos", "x64", ["--ios", "--ios-platform", "tvos", "--simulator", "--simulator-cpu", "x64"]),
+    "maccatalyst-arm64": ("maccatalyst", "arm64", ["--ios", "--ios-platform", "maccatalyst"]),
+    "maccatalyst-x64": ("maccatalyst", "x64", ["--ios", "--ios-platform", "maccatalyst", "--ios-cpu", "x64"]),
 }
 
 DESKTOP = {"linux", "osx", "win"}
 
-LIBRARY = {"linux": "libimpeller.so", "android": "libimpeller.so", "osx": "libimpeller.dylib", "win": "impeller.dll"}
+# Apple mobile platforms. Their builds are slices that package-apple.py combines into frameworks.
+APPLE_MOBILE = {"ios", "tvos", "maccatalyst"}
+
+LIBRARY = {"linux": "libimpeller.so", "android": "libimpeller.so", "osx": "libimpeller.dylib", "win": "impeller.dll",
+           "ios": "libimpeller.dylib", "tvos": "libimpeller.dylib", "maccatalyst": "libimpeller.dylib"}
+
+MACOS_INSTALL_NAME = "@rpath/libimpeller.dylib"
+FRAMEWORK_INSTALL_NAME = "@rpath/impeller.framework/impeller"
+
+# Per Apple mobile slice kind: the LC_BUILD_VERSION platform, the minimum OS version (Flutter's
+# ios_deployment_target and the fork's tvos_deployment_target), the SDK and the clang target of the link check.
+APPLE_SLICE = {
+    "ios": (2, "15.0", "iphoneos", "{arch}-apple-ios15.0"),
+    "iossimulator": (7, "15.0", "iphonesimulator", "{arch}-apple-ios15.0-simulator"),
+    "tvos": (3, "16.0", "appletvos", "{arch}-apple-tvos16.0"),
+    "tvossimulator": (8, "16.0", "appletvsimulator", "{arch}-apple-tvos16.0-simulator"),
+    "maccatalyst": (6, "15.0", "macosx", "{arch}-apple-ios15.0-macabi"),
+}
+MACHO_PLATFORM_NAMES = {"MACOS": 1, "IOS": 2, "TVOS": 3, "MACCATALYST": 6, "IOSSIMULATOR": 7, "TVOSSIMULATOR": 8}
+
+# Where an Apple mobile library may load its dependencies from.
+APPLE_DEPENDENCY_ROOTS = ("/System/Library/Frameworks/", "/usr/lib/", "/System/iOSSupport/")
 
 # Shared libraries the library may depend on.
 LINUX_NEEDED = {"libc.so.6", "libm.so.6", "libdl.so.2", "libpthread.so.0", "librt.so.1", "ld-linux-x86-64.so.2",
@@ -306,20 +340,35 @@ def macho_uuids(path):
     return sorted(set(re.findall(r"UUID:\s*([0-9A-F-]+)", xcrun("dwarfdump", "--uuid", path, capture=True))))
 
 
-def macho_split(lib, built, symbols_dir):
+def macho_split(lib, built, symbols_dir, install_name):
     # dsymutil reads the debug map of the library in the out directory, where the object files (and the LTO object,
     # -object_path_lto) are.
     dsym = symbols_dir / (lib.name + ".dSYM")
     xcrun("dsymutil", built, "-o", dsym)
     xcrun("strip", "-x", lib)
     # Flutter links the library with the install name ./libimpeller.dylib. The UUID does not change.
-    xcrun("install_name_tool", "-id", "@rpath/libimpeller.dylib", lib)
+    xcrun("install_name_tool", "-id", install_name, lib)
     # strip and install_name_tool invalidate the linker's ad-hoc signature, which arm64 needs to load the library.
     run(["codesign", "--force", "--sign", "-", lib])
     return [dsym]
 
 
-def macho_checks(lib, dsym, checks):
+def apple_slice_kind(rid):
+    """ios, iossimulator, tvos, tvossimulator or maccatalyst."""
+    return rid.split("-")[0]
+
+
+def macho_build_version(load_commands):
+    """The platform number and minimum OS of the LC_BUILD_VERSION load command."""
+    match = re.search(r"cmd LC_BUILD_VERSION.*?platform (\w+).*?minos ([0-9.]+)", load_commands, re.S)
+    if not match:
+        return None, None
+    platform_value = match.group(1)
+    number = int(platform_value) if platform_value.isdigit() else MACHO_PLATFORM_NAMES.get(platform_value.upper())
+    return number, match.group(2)
+
+
+def macho_checks(rid, lib, dsym, checks, install_name):
     lib_uuids, dsym_uuids = macho_uuids(lib), macho_uuids(dsym)
     if not lib_uuids or lib_uuids != dsym_uuids:
         fail(f"UUIDs differ: {lib.name} {lib_uuids}, {dsym.name} {dsym_uuids}")
@@ -333,21 +382,34 @@ def macho_checks(lib, dsym, checks):
     if stabs:
         fail(f"{lib.name} still has debug map (stab) symbols after strip")
 
-    install_name = xcrun("otool", "-D", lib, capture=True).strip().splitlines()[-1].strip()
-    if install_name != "@rpath/libimpeller.dylib":
-        fail(f"{lib.name} install name is {install_name}, expected @rpath/libimpeller.dylib")
-    checks["installName"] = install_name
+    actual_name = xcrun("otool", "-D", lib, capture=True).strip().splitlines()[-1].strip()
+    if actual_name != install_name:
+        fail(f"{lib.name} install name is {actual_name}, expected {install_name}")
+    checks["installName"] = actual_name
     run(["codesign", "--verify", "--strict", lib])
     checks["codesign"] = "ad-hoc"
     load = xcrun("otool", "-l", lib, capture=True)
-    match = re.search(r"cmd LC_BUILD_VERSION.*?minos ([0-9.]+)", load, re.S)
-    if not match:
-        match = re.search(r"cmd LC_VERSION_MIN_MACOSX.*?version ([0-9.]+)", load, re.S)
-    if not match:
-        fail(f"No minimum macOS version in {lib.name}")
-    checks["minimumMacOS"] = match.group(1)
-    checks["dependencies"] = [line.strip().split(" ")[0]
-                              for line in xcrun("otool", "-L", lib, capture=True).splitlines()[2:] if line.strip()]
+    dependencies = [line.strip().split(" ")[0]
+                    for line in xcrun("otool", "-L", lib, capture=True).splitlines()[2:] if line.strip()]
+    if TARGETS[rid][0] in APPLE_MOBILE:
+        expected_platform, expected_minos = APPLE_SLICE[apple_slice_kind(rid)][:2]
+        platform_number, minos = macho_build_version(load)
+        if platform_number != expected_platform or minos != expected_minos:
+            fail(f"{lib.name} is for platform {platform_number} minos {minos}, "
+                 f"expected platform {expected_platform} minos {expected_minos}")
+        checks["platform"] = platform_number
+        checks["minimumOS"] = minos
+        stray = [d for d in dependencies if not d.startswith(APPLE_DEPENDENCY_ROOTS)]
+        if stray:
+            fail(f"{lib.name} depends on libraries outside the OS: {', '.join(stray)}")
+    else:
+        match = re.search(r"cmd LC_BUILD_VERSION.*?minos ([0-9.]+)", load, re.S)
+        if not match:
+            match = re.search(r"cmd LC_VERSION_MIN_MACOSX.*?version ([0-9.]+)", load, re.S)
+        if not match:
+            fail(f"No minimum macOS version in {lib.name}")
+        checks["minimumMacOS"] = match.group(1)
+    checks["dependencies"] = dependencies
     symbols = xcrun("nm", "-gU", lib, capture=True)
     return {m for m in re.findall(r"\s[TS]\s+_(Impeller\w+)$", symbols, re.M)}
 
@@ -427,6 +489,39 @@ def smoke(rid, stage, raw_version, checks):
     checks["smoke"] = "passed"
 
 
+def rosetta_available():
+    return subprocess.run(["arch", "-x86_64", "/usr/bin/true"], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode == 0
+
+
+def apple_smoke(rid, stage, raw_version, checks):
+    """Links the smoke program against an Apple mobile slice. Mac Catalyst slices also run it on a macOS host."""
+    kind = apple_slice_kind(rid)
+    _, _, sdk, triple = APPLE_SLICE[kind]
+    arch = "x86_64" if TARGETS[rid][1] == "x64" else "arm64"
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = pathlib.Path(tmp)
+        # The library's install name is @rpath/impeller.framework/impeller.
+        framework = tmp / "impeller.framework"
+        framework.mkdir()
+        shutil.copy2(stage / "lib" / LIBRARY[TARGETS[rid][0]], framework / "impeller")
+        source = tmp / "smoke.c"
+        source.write_text(SMOKE_C)
+        exe = tmp / "smoke"
+        run(["xcrun", "--sdk", sdk, "clang", "-target", triple.format(arch=arch), "-std=c11", "-I", stage / "include",
+             source, "-o", exe, "-F", tmp, "-framework", "impeller", f"-Wl,-rpath,{tmp}"])
+        runnable = kind == "maccatalyst" and host_os() == "mac" and (
+            host_cpu() == TARGETS[rid][1] or (TARGETS[rid][1] == "x64" and rosetta_available()))
+        if not runnable:
+            checks["smoke"] = "linked"
+            return
+        out = run([exe], capture=True, check=False)
+        actual = int(out.split()[0]) if out.split() and out.split()[0].isdigit() else None
+    if actual != raw_version:
+        fail(f"ImpellerGetVersion() returned {actual}, IMPELLER_VERSION is {raw_version}")
+    checks["smoke"] = "passed"
+
+
 # ----------------------------------------------------------------------------------------------------------------
 # Toolchain
 
@@ -441,6 +536,10 @@ def toolchain(rid, env, lto):
     if os_name == "osx":
         info["xcode"] = " ".join(run(["xcodebuild", "-version"], capture=True).split())
         info["sdk"] = run(["xcrun", "--show-sdk-version"], capture=True).strip()
+    if os_name in APPLE_MOBILE:
+        sdk = APPLE_SLICE[apple_slice_kind(rid)][2]
+        info["xcode"] = " ".join(run(["xcodebuild", "-version"], capture=True).split())
+        info["sdk"] = f"{sdk} " + run(["xcrun", "--sdk", sdk, "--show-sdk-version"], capture=True).strip()
     if os_name == "win":
         vs = vs_install()
         info["visualStudio"] = f"{vs['displayName']} {vs['catalog']['productDisplayVersion']}"
@@ -547,8 +646,11 @@ def main():
         (debug,) = elf_split(lib, symbols_dir / "lib")
         exported = elf_checks(os_name, lib, debug, checks)
     elif os_name == "osx":
-        (dsym,) = macho_split(lib, built, symbols_dir / "lib")
-        exported = macho_checks(lib, dsym, checks)
+        (dsym,) = macho_split(lib, built, symbols_dir / "lib", MACOS_INSTALL_NAME)
+        exported = macho_checks(rid, lib, dsym, checks, MACOS_INSTALL_NAME)
+    elif os_name in APPLE_MOBILE:
+        (dsym,) = macho_split(lib, built, symbols_dir / "lib", FRAMEWORK_INSTALL_NAME)
+        exported = macho_checks(rid, lib, dsym, checks, FRAMEWORK_INSTALL_NAME)
     else:
         (pdb,) = pe_split(lib, built, symbols_dir / "lib")
         exported = pe_checks(rid, lib, pdb, checks)
@@ -563,6 +665,8 @@ def main():
     host_rid = {"linux": "linux", "mac": "osx", "windows": "win"}[host_os()] + "-" + host_cpu()
     if rid in HOST_RIDS and rid == host_rid:
         smoke(rid, main_dir, raw_version, checks)
+    if os_name in APPLE_MOBILE:
+        apple_smoke(rid, main_dir, raw_version, checks)
 
     # Tools archive: impellerc and the shader library it includes from.
     if os_name in DESKTOP:
@@ -603,6 +707,16 @@ def main():
         "checks": checks,
     }
     (main_dir / "build-info.json").write_text(json.dumps(info, indent=2) + "\n")
+
+    if os_name in APPLE_MOBILE:
+        # One slice archive with the dSYM in symbols/, for package-apple.py.
+        shutil.copytree(symbols_dir / "lib", main_dir / "symbols")
+        slices = RELEASE / "slices"
+        slices.mkdir(parents=True, exist_ok=True)
+        archive = slices / f"{name}.tar.gz"
+        tar(archive, name, main_dir)
+        print(f"slices/{archive.name}  {archive.stat().st_size / 1e6:.1f} MB")
+        return
 
     RELEASE.mkdir(exist_ok=True)
     tar(RELEASE / f"{name}.tar.gz", name, main_dir)
