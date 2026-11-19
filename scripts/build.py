@@ -127,6 +127,11 @@ def build_env():
     env["DEPOT_TOOLS_UPDATE"] = "0"
     env["DEPOT_TOOLS_METRICS"] = "0"
     if host_os() == "windows":
+        # tools/gn runs "git.bat", which only a depot_tools that bootstrapped its own git has. Forward it to git.
+        shim = ROOT / "toolchains" / "git-shim"
+        shim.mkdir(parents=True, exist_ok=True)
+        (shim / "git.bat").write_text("@git %*\r\n")
+        env["PATH"] = env["PATH"] + os.pathsep + str(shim)
         env["DEPOT_TOOLS_WIN_TOOLCHAIN"] = "0"
         env.setdefault("GYP_MSVS_OVERRIDE_PATH", vs_install()["installationPath"])
     return env
