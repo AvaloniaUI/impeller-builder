@@ -516,8 +516,10 @@ def main():
         z.extractall(unpacked)
 
     # Main archive: headers, the shared library (and the import library on Windows), licenses, README.
+    # LF line endings on every RID: Flutter's .gitattributes (text=auto) checks out CRLF on Windows.
     for header in ("impeller.h", "impeller.hpp"):
-        shutil.copy2(unpacked / "include" / header, main_dir / "include" / header)
+        data = (unpacked / "include" / header).read_bytes().replace(b"\r\n", b"\n")
+        (main_dir / "include" / header).write_bytes(data)
     library_name = LIBRARY[os_name]
     lib = main_dir / "lib" / library_name
     shutil.copy2(unpacked / "lib" / library_name, lib)

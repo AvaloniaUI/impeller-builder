@@ -208,11 +208,11 @@ def sync(repository, sha, rid):
 
 
 def windows_git_config():
-    """Long paths and no line ending conversion for every git call of this script and gclient, without touching the
-    user's git configuration."""
+    """Long paths for every git call of this script and gclient, without touching the user's git configuration.
+    (Line endings stay native: Flutter's .gitattributes has text=auto, and build.py writes the headers with LF.)"""
     if os.name != "nt":
         return
-    settings = {"core.longpaths": "true", "core.autocrlf": "false"}
+    settings = {"core.longpaths": "true"}
     base = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
     for i, (key, value) in enumerate(settings.items()):
         os.environ[f"GIT_CONFIG_KEY_{base + i}"] = key
