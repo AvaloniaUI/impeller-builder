@@ -1,0 +1,8 @@
+/flutter/
+/toolchains/
+/release/
+/artifacts/
+/logs/
+__pycache__/
+.idea/
+.DS_Store

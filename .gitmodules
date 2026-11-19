@@ -1,6 +1,0 @@
-[submodule "depot-tools"]
-	path = depot_tools
-	url = https://chromium.googlesource.com/chromium/tools/depot_tools
-[submodule "flutter"]
-	path = flutter
-	url = https://github.com/kekekeks/flutter.git
