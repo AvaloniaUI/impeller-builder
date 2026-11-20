@@ -6,7 +6,8 @@ gclient dependencies (about 10 GB) and too large to analyze.
 - `scripts/fetch-flutter.py` resolves a ref and syncs `flutter/`; `scripts/build.py` builds and packages one RID or
   Apple mobile slice; `scripts/package-apple.py` combines the slices of ios, tvos or maccatalyst into frameworks;
   `scripts/make-release.py` checks the archives and writes the manifest.
-- `AvaloniaUI/flutter` `avalonia/<tag>` branches are the upstream tag plus one squashed commit.
+- `AvaloniaUI/flutter` `avalonia/<tag>` branches are the upstream tag plus one squashed commit per feature, so each
+  feature can go upstream on its own. Squash only the commits of one feature; never squash features together.
 - Keep the archive layout, the asset names and the `manifest.json` keys stable: NImpeller (`impeller.lock.json`,
   `build/ImpellerLock.cs`) reads them.
 - The scripts run on Python 3.9, the system Python of macOS: no `match` statements, no `X | Y` type unions or other
